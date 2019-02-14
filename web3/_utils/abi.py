@@ -241,8 +241,8 @@ def get_abi_inputs(function_abi, arg_values):
     """Similar to get_abi_input_types(), but gets values too.
 
     Returns a zip of types and their corresponding argument values.
-    Importantly, looks in `function_abi` for tuples, and for any found, (a)
-    translates them from the ABI dict representation to the parenthesized type
+    Importantly, looks in `function_abi` for tuples or tuples[], and for any found,
+    (a) translates them from the ABI dict representation to the parenthesized type
     list representation that's expected by eth_abi, and (b) translates their
     corresponding arguments values from the python dict representation to the
     tuple representation expected by eth_abi.
@@ -275,8 +275,8 @@ def get_abi_inputs(function_abi, arg_values):
     if "inputs" not in function_abi:
         return ([], ())
 
-    types = []
-    values = tuple()
+    new_types = []
+    new_arguments = tuple()
     for abi_input, arg_value in zip(function_abi["inputs"], arg_values):
         if abi_input["type"] == "tuple":
             component_types = []
@@ -292,12 +292,55 @@ def get_abi_inputs(function_abi, arg_values):
                         "Unknown value type {} for ABI type 'tuple'"
                         .format(type(arg_value))
                     )
-            types.append("(" + ",".join(component_types) + ")")
-            values += (tuple(component_values),)
+            new_types.append("(" + ",".join(component_types) + ")")
+            new_arguments += (tuple(component_values),)
+        elif abi_input["type"] == "tuple[]":
+            if isinstance(arg_value, tuple):
+                arg_value = arg_value[0]
+            if isinstance(arg_value, list):
+                components_types = []
+                for component in abi_input["components"]:
+                    components_types.append(component["type"])
+                components_values = []
+                for struct in arg_value:
+                    component_values = []
+                    for component, value in zip(abi_input["components"], struct):
+                        if isinstance(struct, dict):
+                            try:
+                                component_values.append(struct[component["name"]])
+                            except KeyError:
+                                raise ValueError(
+                                    "Missing key '{key}' in input dictionary".format(key=component["name"])
+                                )
+                        elif isinstance(struct, tuple):
+                            if len(struct) != len(components_types):
+                                raise ValueError(
+                                    "Number of tuple values '{actual}' do not match expected number of tuple"
+                                    " components defined in ABI '{expected}'".format(
+                                        actual=len(struct),
+                                        expected=len(components_types))
+                                )
+                            component_values.append(value)
+                        else:
+                            raise TypeError(
+                                "Unknown value type {} for ABI type 'tuple[]'"
+                                    .format(type(arg_value))
+                            )
+                    components_values.append(tuple(component_values))
+                new_types.append("(" + ",".join(components_types) + ")[]")
+                new_arguments += (components_values,)
+            else:
+                raise TypeError(
+                    "Unknown value type {} for ABI type 'tuple[]'"
+                    .format(type(arg_value))
+                )
         else:
-            types.append(abi_input["type"])
-            values += (arg_value,)
-    return types, values
+            new_types.append(abi_input["type"])
+            new_arguments += (arg_value,)
+    # print('%%%%%%%%%%%%1', new_types)
+    # print('%%%%%%%%%%%%2', new_arguments)
+
+    return new_types, new_arguments
 
 
 def check_if_arguments_can_be_encoded(function_abi, args, kwargs):
@@ -657,6 +700,13 @@ def abi_sub_tree(data_type, data_value):
         isinstance(data_type, str) and
         data_type[0] == "(" and
         isinstance(data_value, tuple)
+    ):
+        return ABITypedData([data_type, data_value])
+
+    if (
+        isinstance(data_type, str) and
+        data_type[0] == "(" and
+        isinstance(data_value, list)
     ):
         return ABITypedData([data_type, data_value])
 
